@@ -17,7 +17,6 @@ try:
     elif hasattr(fe_mod, "extract_feature"):
         extract_feat_fn = fe_mod.extract_feature
     else:
-        # 모듈 내 첫 번째 호출 가능한 함수 탐색
         fns = [getattr(fe_mod, a) for a in dir(fe_mod) if callable(getattr(fe_mod, a)) and not a.startswith("_")]
         extract_feat_fn = fns[0] if fns else (lambda p: [0]*10)
 except Exception:
@@ -46,14 +45,14 @@ class DefectInspectorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("불량 이미지 자동 판정 프로그램 (범용 동적 컬럼 에디션)")
-        self.geometry("1500, 900")
+        # Tkinter geometry 포맷은 "가로x세로" 이어야 합니다.
+        self.geometry("1500x900")
         self.minsize(1200, 700)
 
         # -------------------------------------------------------------
         # 파일명 분할 및 동적 컬럼 기본 설정
         # -------------------------------------------------------------
         self.delimiter = "_"
-        # 파일명에서 순서대로 분할할 컬럼 정의 (UI에서 자유롭게 변경 가능)
         self.custom_columns = ["LOT", "GLS", "셀번지", "X", "Y", "검사호기"]
         self.visible_columns = list(self.custom_columns)
         self.system_columns = ["AI판정", "신뢰율(%)", "작업자 판정"]
@@ -72,7 +71,7 @@ class DefectInspectorApp(tk.Tk):
         style.map("Treeview", background=[("selected", "#0078d7")], foreground=[("selected", "white")])
 
     def _init_ui(self):
-        # 1. 상단 글로벌 컨트롤 바
+        # 1. 상단 컨트롤 바
         top_bar = ttk.Frame(self, padding=5)
         top_bar.pack(side=tk.TOP, fill=tk.X)
 
@@ -86,7 +85,7 @@ class DefectInspectorApp(tk.Tk):
         self.lbl_status = ttk.Label(top_bar, text="준비 완료. 모델 학습 여부: 대기", font=("맑은 고딕", 9))
         self.lbl_status.pack(side=tk.RIGHT, padx=10)
 
-        # 2. 파일명 분할 및 동적 컬럼 도구 바 (신규 기능)
+        # 2. 파일명 텍스트 분할 및 동적 컬럼 도구 바
         cfg_bar = ttk.LabelFrame(self, text="파일명 텍스트 나누기 및 컬럼 정의", padding=5)
         cfg_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=3)
 
@@ -127,7 +126,7 @@ class DefectInspectorApp(tk.Tk):
         self.lbl_summary = ttk.Label(summary_frame, text="총 이미지 수: 0개  |  AI 판정 완료: 0개  |  작업자 미검수: 0개", font=("맑은 고딕", 9, "bold"))
         self.lbl_summary.pack(anchor="w", padx=5)
 
-        # 5. 하단 테이블(Treeview) 영역 (붉은 박스 영역)
+        # 5. 하단 Treeview 테이블 영역
         tbl_container = ttk.Frame(self, padding=(8, 4, 8, 8))
         tbl_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
@@ -153,7 +152,7 @@ class DefectInspectorApp(tk.Tk):
         self.rebuild_treeview_headers()
 
     # -------------------------------------------------------------
-    # 동적 컬럼 & 파싱 로직
+    # 동적 컬럼 & 파일명 파싱 로직
     # -------------------------------------------------------------
     def rebuild_treeview_headers(self):
         active_cols = ["선택", "이미지"] + self.visible_columns + self.system_columns
@@ -207,7 +206,7 @@ class DefectInspectorApp(tk.Tk):
     def open_column_filter_dialog(self):
         dlg = tk.Toplevel(self)
         dlg.title("표시 컬럼 필터")
-        dlg.geometry("320, 380")
+        dlg.geometry("320x380")
         dlg.resizable(False, False)
         dlg.transient(self)
         dlg.grab_set()
@@ -239,7 +238,7 @@ class DefectInspectorApp(tk.Tk):
         ttk.Button(btn_frame, text="취소", command=dlg.destroy).pack(side=tk.RIGHT)
 
     # -------------------------------------------------------------
-    # 데이터 로드 및 테이블 바인딩
+    # 데이터 로드 및 렌더링
     # -------------------------------------------------------------
     def load_image_folder(self):
         folder = filedialog.askdirectory()
@@ -248,7 +247,7 @@ class DefectInspectorApp(tk.Tk):
         valid_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
         files = [f for f in os.listdir(folder) if f.lower().endswith(valid_exts)]
         if not files:
-            messagebox.showinfo("안내", "해당 폴더에 이미지 파일이 없습니다.")
+            messagebox.showinfo("안내", "해당 폴더에 지원되는 이미지 파일이 없습니다.")
             return
 
         for f in files:
@@ -300,6 +299,9 @@ class DefectInspectorApp(tk.Tk):
             text=f"총 이미지 수: {total}개  |  AI 판정 완료: {ai_done}개  |  작업자 미검수: {uninspected}개"
         )
 
+    # -------------------------------------------------------------
+    # 인터랙션
+    # -------------------------------------------------------------
     def on_tree_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
@@ -328,7 +330,7 @@ class DefectInspectorApp(tk.Tk):
         record = self.records[idx]
         dlg = tk.Toplevel(self)
         dlg.title(f"판정 수정: {record['이미지']}")
-        dlg.geometry("320, 160")
+        dlg.geometry("320x160")
         dlg.transient(self)
         dlg.grab_set()
 
@@ -380,7 +382,7 @@ class DefectInspectorApp(tk.Tk):
         messagebox.showinfo("완료", f"새 판정 유형 '{new_val}' 추가 완료")
 
     # -------------------------------------------------------------
-    # 엑셀 내보내기 (표시된 컬럼 그대로 저장)
+    # 엑셀 다운로드
     # -------------------------------------------------------------
     def export_to_excel(self):
         if not self.records:
@@ -411,7 +413,7 @@ class DefectInspectorApp(tk.Tk):
             messagebox.showerror("오류", f"엑셀 저장 중 오류 발생: {e}")
 
     # -------------------------------------------------------------
-    # AI 판정 및 학습 연동
+    # AI 학습 및 판정
     # -------------------------------------------------------------
     def train_model(self):
         train_records = [r for r in self.records if r.get("작업자 판정") not in ["미판정", "", "-"]]
