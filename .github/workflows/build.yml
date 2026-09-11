@@ -28,7 +28,7 @@ jobs:
           } elseif (Test-Path "requirements.txt") {
               pip install -r requirements.txt
           } else {
-              pip install numpy opencv-python-headless Pillow scikit-learn joblib pandas openpyxl pyinstaller
+              pip install numpy opencv-python-headless Pillow scikit-learn scikit-image joblib pandas openpyxl pyinstaller
           }
           pip install pyinstaller
 
@@ -40,6 +40,9 @@ jobs:
           }
           pyinstaller --noconfirm --onedir --windowed `
             --name "DefectInspector" `
+            --collect-all skimage `
+            --hidden-import=skimage `
+            --hidden-import=skimage.feature `
             --hidden-import=openpyxl `
             --hidden-import=pandas `
             --hidden-import=sklearn `
