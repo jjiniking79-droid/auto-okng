@@ -1,0 +1,43 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 1. 코드를 가상머신에 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 2. Python 3.10 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 3. 의존성 라이브러리 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r defect_inspector/requirements.txt
+
+      - name: 4. PyInstaller로 단일 EXE 패키징
+        run: |
+          pyinstaller --noconfirm --onedir --windowed `
+            --name "DefectInspector" `
+            --hidden-import=openpyxl `
+            --hidden-import=pandas `
+            --hidden-import=sklearn `
+            --hidden-import=cv2 `
+            defect_inspector/app.py
+
+      - name: 5. 빌드 결과물 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: DefectInspector_Windows_x64
+          path: dist/DefectInspector/
