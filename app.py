@@ -6,7 +6,7 @@ from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 from PIL import Image, ImageTk
 
-# 기존 모듈과 안전하게 연동 (함수/클래스 형태 모두 자동 대응)
+# 기존 백엔드 모듈 안전 연동 (함수/클래스 형태 모두 대응)
 try:
     import feature_extractor as fe_mod
     if hasattr(fe_mod, "FeatureExtractor"):
@@ -18,9 +18,9 @@ try:
         extract_feat_fn = fe_mod.extract_feature
     else:
         fns = [getattr(fe_mod, a) for a in dir(fe_mod) if callable(getattr(fe_mod, a)) and not a.startswith("_")]
-        extract_feat_fn = fns[0] if fns else (lambda p: [0]*10)
+        extract_feat_fn = fns[0] if fns else (lambda p: [0] * 10)
 except Exception:
-    extract_feat_fn = lambda p: [0]*10
+    extract_feat_fn = lambda p: [0] * 10
 
 try:
     import model_manager as mm_mod
@@ -45,12 +45,11 @@ class DefectInspectorApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("불량 이미지 자동 판정 프로그램 (범용 동적 컬럼 에디션)")
-        # Tkinter geometry 포맷은 "가로x세로" 이어야 합니다.
         self.geometry("1500x900")
         self.minsize(1200, 700)
 
         # -------------------------------------------------------------
-        # 파일명 분할 및 동적 컬럼 기본 설정
+        # 기본 컬럼 및 판정 유형 설정
         # -------------------------------------------------------------
         self.delimiter = "_"
         self.custom_columns = ["LOT", "GLS", "셀번지", "X", "Y", "검사호기"]
@@ -71,7 +70,7 @@ class DefectInspectorApp(tk.Tk):
         style.map("Treeview", background=[("selected", "#0078d7")], foreground=[("selected", "white")])
 
     def _init_ui(self):
-        # 1. 상단 컨트롤 바
+        # 1. 상단 글로벌 컨트롤 바
         top_bar = ttk.Frame(self, padding=5)
         top_bar.pack(side=tk.TOP, fill=tk.X)
 
@@ -85,8 +84,8 @@ class DefectInspectorApp(tk.Tk):
         self.lbl_status = ttk.Label(top_bar, text="준비 완료. 모델 학습 여부: 대기", font=("맑은 고딕", 9))
         self.lbl_status.pack(side=tk.RIGHT, padx=10)
 
-        # 2. 파일명 텍스트 분할 및 동적 컬럼 도구 바
-        cfg_bar = ttk.LabelFrame(self, text="파일명 텍스트 나누기 및 컬럼 정의", padding=5)
+        # 2. 파일명 텍스트 나누기 및 컬럼 편집 관리 바
+        cfg_bar = ttk.LabelFrame(self, text="파일명 텍스트 나누기 및 컬럼 정의 (편집/추가/삭제/필터)", padding=5)
         cfg_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=3)
 
         ttk.Label(cfg_bar, text="구분 기호:").pack(side=tk.LEFT, padx=(5, 2))
@@ -94,29 +93,40 @@ class DefectInspectorApp(tk.Tk):
         self.ent_delim.insert(0, self.delimiter)
         self.ent_delim.pack(side=tk.LEFT, padx=(0, 10))
 
-        ttk.Label(cfg_bar, text="컬럼 순서 (쉼표로 구분):").pack(side=tk.LEFT, padx=(0, 2))
-        self.ent_cols = ttk.Entry(cfg_bar, width=50)
+        ttk.Label(cfg_bar, text="컬럼 순서:").pack(side=tk.LEFT, padx=(0, 2))
+        self.ent_cols = ttk.Entry(cfg_bar, width=45)
         self.ent_cols.insert(0, ", ".join(self.custom_columns))
-        self.ent_cols.pack(side=tk.LEFT, padx=(0, 10))
+        self.ent_cols.pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Button(cfg_bar, text="규칙 적용", command=self.apply_column_rule).pack(side=tk.LEFT, padx=3)
-        ttk.Button(cfg_bar, text="👁️ 표시 컬럼 필터", command=self.open_column_filter_dialog).pack(side=tk.LEFT, padx=5)
+        ttk.Button(cfg_bar, text="즉시 적용", command=self.apply_column_rule_from_entry).pack(side=tk.LEFT, padx=2)
+        ttk.Button(cfg_bar, text="✏️ 컬럼 상세 편집(추가/삭제/이름수정)", command=self.open_column_manager_dialog).pack(side=tk.LEFT, padx=4)
+        ttk.Button(cfg_bar, text="👁️ 표시 컬럼 필터", command=self.open_column_filter_dialog).pack(side=tk.LEFT, padx=4)
 
-        # 3. 판정 유형 관리 바
+        # 3. 판정 유형 관리 바 (유형 추가 및 유형 삭제 포함)
         type_bar = ttk.LabelFrame(self, text="판정 유형 관리", padding=5)
         type_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=2)
 
-        ttk.Label(type_bar, text="새 유형 추가:").pack(side=tk.LEFT, padx=2)
-        self.ent_new_type = ttk.Entry(type_bar, width=15)
-        self.ent_new_type.pack(side=tk.LEFT, padx=3)
+        # 새 유형 추가
+        ttk.Label(type_bar, text="새 유형:").pack(side=tk.LEFT, padx=(4, 2))
+        self.ent_new_type = ttk.Entry(type_bar, width=12)
+        self.ent_new_type.pack(side=tk.LEFT, padx=2)
         ttk.Button(type_bar, text="추가", command=self.add_defect_type).pack(side=tk.LEFT, padx=2)
 
-        ttk.Label(type_bar, text="선택 이미지 일괄 판정값:").pack(side=tk.LEFT, padx=(20, 2))
+        # 기존 유형 삭제
+        ttk.Label(type_bar, text="삭제할 유형:").pack(side=tk.LEFT, padx=(12, 2))
+        self.cmb_del_type = ttk.Combobox(type_bar, values=self.defect_types, state="readonly", width=12)
+        if self.defect_types:
+            self.cmb_del_type.current(0)
+        self.cmb_del_type.pack(side=tk.LEFT, padx=2)
+        ttk.Button(type_bar, text="유형 삭제", command=self.delete_defect_type).pack(side=tk.LEFT, padx=2)
+
+        # 선택 일괄 적용
+        ttk.Label(type_bar, text="선택 항목 일괄 판정:").pack(side=tk.LEFT, padx=(20, 2))
         self.cmb_batch_type = ttk.Combobox(type_bar, values=self.defect_types, state="readonly", width=12)
         if self.defect_types:
             self.cmb_batch_type.current(0)
         self.cmb_batch_type.pack(side=tk.LEFT, padx=2)
-        ttk.Button(type_bar, text="선택 항목에 적용", command=self.apply_batch_type).pack(side=tk.LEFT, padx=2)
+        ttk.Button(type_bar, text="적용", command=self.apply_batch_type).pack(side=tk.LEFT, padx=2)
         ttk.Button(type_bar, text="전체 선택", command=lambda: self.set_all_checks(True)).pack(side=tk.LEFT, padx=2)
         ttk.Button(type_bar, text="전체 해제", command=lambda: self.set_all_checks(False)).pack(side=tk.LEFT, padx=2)
 
@@ -152,7 +162,185 @@ class DefectInspectorApp(tk.Tk):
         self.rebuild_treeview_headers()
 
     # -------------------------------------------------------------
-    # 동적 컬럼 & 파일명 파싱 로직
+    # 판정 유형 추가 / 삭제 로직
+    # -------------------------------------------------------------
+    def add_defect_type(self):
+        new_val = self.ent_new_type.get().strip()
+        if not new_val:
+            messagebox.showwarning("주의", "추가할 유형 이름을 입력하세요.")
+            return
+        if new_val in self.defect_types:
+            messagebox.showwarning("주의", "이미 존재하는 판정 유형입니다.")
+            return
+
+        self.defect_types.append(new_val)
+        self._sync_defect_type_combos(select_val=new_val)
+        self.ent_new_type.delete(0, tk.END)
+        messagebox.showinfo("완료", f"새 판정 유형 '{new_val}' 추가되었습니다.")
+
+    def delete_defect_type(self):
+        target = self.cmb_del_type.get()
+        if not target:
+            messagebox.showwarning("주의", "삭제할 유형을 선택하세요.")
+            return
+        if len(self.defect_types) <= 1:
+            messagebox.showwarning("경고", "최소 1개 이상의 판정 유형은 유지되어야 합니다.")
+            return
+
+        if messagebox.askyesno("유형 삭제 확인", f"정말 판정 유형 '{target}'을(를) 삭제하시겠습니까?"):
+            self.defect_types.remove(target)
+            self._sync_defect_type_combos()
+            messagebox.showinfo("완료", f"판정 유형 '{target}'이(가) 삭제되었습니다.")
+
+    def _sync_defect_type_combos(self, select_val=None):
+        self.cmb_batch_type["values"] = self.defect_types
+        self.cmb_del_type["values"] = self.defect_types
+        if self.defect_types:
+            idx = self.defect_types.index(select_val) if (select_val in self.defect_types) else 0
+            self.cmb_batch_type.current(idx)
+            self.cmb_del_type.current(idx)
+        else:
+            self.cmb_batch_type.set("")
+            self.cmb_del_type.set("")
+
+    # -------------------------------------------------------------
+    # 컬럼 상세 편집 (수정, 추가, 삭제, 순서 변경) 다이얼로그
+    # -------------------------------------------------------------
+    def open_column_manager_dialog(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("컬럼 상세 편집 관리")
+        dlg.geometry("450x420")
+        dlg.minsize(400, 360)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        lbl = ttk.Label(dlg, text="컬럼 목록을 편집합니다 (위치 순서대로 파일명 분할 매핑)", font=("맑은 고딕", 9, "bold"))
+        lbl.pack(anchor="w", padx=12, pady=(10, 5))
+
+        body_frame = ttk.Frame(dlg)
+        body_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=5)
+
+        # 리스트박스 및 스크롤바
+        lb_frame = ttk.Frame(body_frame)
+        lb_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        col_listbox = tk.Listbox(lb_frame, font=("맑은 고딕", 9), selectmode=tk.SINGLE)
+        col_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL, command=col_listbox.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        col_listbox.config(yscrollcommand=sb.set)
+
+        for col in self.custom_columns:
+            col_listbox.insert(tk.END, col)
+
+        # 우측 조작 버튼 프레임
+        btn_frame = ttk.Frame(body_frame)
+        btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+
+        ent_edit = ttk.Entry(btn_frame, width=14)
+        ent_edit.pack(pady=(0, 4))
+
+        def on_list_select(event):
+            sel = col_listbox.curselection()
+            if sel:
+                ent_edit.delete(0, tk.END)
+                ent_edit.insert(0, col_listbox.get(sel[0]))
+
+        col_listbox.bind("<<ListboxSelect>>", on_list_select)
+
+        def add_col():
+            val = ent_edit.get().strip()
+            if not val:
+                messagebox.showwarning("주의", "추가할 컬럼명을 입력하세요.", parent=dlg)
+                return
+            if val in col_listbox.get(0, tk.END):
+                messagebox.showwarning("주의", "이미 존재하는 컬럼명입니다.", parent=dlg)
+                return
+            col_listbox.insert(tk.END, val)
+            ent_edit.delete(0, tk.END)
+
+        def rename_col():
+            sel = col_listbox.curselection()
+            if not sel:
+                messagebox.showwarning("주의", "수정할 컬럼을 목록에서 선택하세요.", parent=dlg)
+                return
+            val = ent_edit.get().strip()
+            if not val:
+                messagebox.showwarning("주의", "새 컬럼명을 입력하세요.", parent=dlg)
+                return
+            idx = sel[0]
+            col_listbox.delete(idx)
+            col_listbox.insert(idx, val)
+            col_listbox.select_set(idx)
+
+        def delete_col():
+            sel = col_listbox.curselection()
+            if not sel:
+                messagebox.showwarning("주의", "삭제할 컬럼을 선택하세요.", parent=dlg)
+                return
+            if col_listbox.size() <= 1:
+                messagebox.showwarning("경고", "최소 1개 이상의 컬럼은 유지되어야 합니다.", parent=dlg)
+                return
+            col_listbox.delete(sel[0])
+            ent_edit.delete(0, tk.END)
+
+        def move_up():
+            sel = col_listbox.curselection()
+            if not sel or sel[0] == 0:
+                return
+            idx = sel[0]
+            item = col_listbox.get(idx)
+            col_listbox.delete(idx)
+            col_listbox.insert(idx - 1, item)
+            col_listbox.select_set(idx - 1)
+
+        def move_down():
+            sel = col_listbox.curselection()
+            if not sel or sel[0] == col_listbox.size() - 1:
+                return
+            idx = sel[0]
+            item = col_listbox.get(idx)
+            col_listbox.delete(idx)
+            col_listbox.insert(idx + 1, item)
+            col_listbox.select_set(idx + 1)
+
+        ttk.Button(btn_frame, text="➕ 컬럼 추가", command=add_col).pack(fill=tk.X, pady=2)
+        ttk.Button(btn_frame, text="✏️ 이름 변경", command=rename_col).pack(fill=tk.X, pady=2)
+        ttk.Button(btn_frame, text="🗑️ 컬럼 삭제", command=delete_col).pack(fill=tk.X, pady=2)
+        ttk.Separator(btn_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+        ttk.Button(btn_frame, text="▲ 위로", command=move_up).pack(fill=tk.X, pady=2)
+        ttk.Button(btn_frame, text="▼ 아래로", command=move_down).pack(fill=tk.X, pady=2)
+
+        # 하단 적용/취소
+        bot_btn_frame = ttk.Frame(dlg)
+        bot_btn_frame.pack(fill=tk.X, padx=12, pady=10)
+
+        def save_and_apply():
+            new_cols = list(col_listbox.get(0, tk.END))
+            if not new_cols:
+                messagebox.showwarning("경고", "최소 1개 이상의 컬럼이 필요합니다.", parent=dlg)
+                return
+
+            self.custom_columns = new_cols
+            self.visible_columns = list(new_cols)
+
+            # 상단 Entry 동기화
+            self.ent_cols.delete(0, tk.END)
+            self.ent_cols.insert(0, ", ".join(self.custom_columns))
+
+            # 데이터 재파싱 및 트리뷰 재구성
+            for r in self.records:
+                r.update(self.parse_filename(r["이미지"]))
+
+            self.rebuild_treeview_headers()
+            dlg.destroy()
+            messagebox.showinfo("완료", "컬럼 설정이 성공적으로 반영되었습니다.")
+
+        ttk.Button(bot_btn_frame, text="설정 저장 및 적용", command=save_and_apply).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(bot_btn_frame, text="취소", command=dlg.destroy).pack(side=tk.RIGHT)
+
+    # -------------------------------------------------------------
+    # 동적 컬럼 바인딩 & 파일명 파싱 로직
     # -------------------------------------------------------------
     def rebuild_treeview_headers(self):
         active_cols = ["선택", "이미지"] + self.visible_columns + self.system_columns
@@ -182,7 +370,7 @@ class DefectInspectorApp(tk.Tk):
             data[col] = tokens[idx] if idx < len(tokens) else "-"
         return data
 
-    def apply_column_rule(self):
+    def apply_column_rule_from_entry(self):
         delim = self.ent_delim.get().strip()
         raw_cols = [c.strip() for c in self.ent_cols.get().split(",") if c.strip()]
         if not delim:
@@ -197,8 +385,7 @@ class DefectInspectorApp(tk.Tk):
         self.visible_columns = list(raw_cols)
 
         for r in self.records:
-            new_parsed = self.parse_filename(r["이미지"])
-            r.update(new_parsed)
+            r.update(self.parse_filename(r["이미지"]))
 
         self.rebuild_treeview_headers()
         messagebox.showinfo("완료", "파일명 분할 규칙이 성공적으로 갱신되었습니다.")
@@ -300,7 +487,7 @@ class DefectInspectorApp(tk.Tk):
         )
 
     # -------------------------------------------------------------
-    # 인터랙션
+    # 인터랙션 (체크박스 및 더블클릭 수정)
     # -------------------------------------------------------------
     def on_tree_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
@@ -339,7 +526,7 @@ class DefectInspectorApp(tk.Tk):
         curr = record.get("작업자 판정", "")
         if curr in self.defect_types:
             cmb.set(curr)
-        else:
+        elif self.defect_types:
             cmb.current(0)
         cmb.pack(padx=15, pady=5)
 
@@ -358,6 +545,9 @@ class DefectInspectorApp(tk.Tk):
 
     def apply_batch_type(self):
         target_val = self.cmb_batch_type.get()
+        if not target_val:
+            messagebox.showwarning("주의", "적용할 판정 유형을 선택하세요.")
+            return
         count = 0
         for r in self.records:
             if r.get("selected", False):
@@ -369,20 +559,8 @@ class DefectInspectorApp(tk.Tk):
         self.refresh_table_view()
         messagebox.showinfo("완료", f"{count}개 항목에 '{target_val}'(으)로 일괄 적용되었습니다.")
 
-    def add_defect_type(self):
-        new_val = self.ent_new_type.get().strip()
-        if not new_val:
-            return
-        if new_val in self.defect_types:
-            messagebox.showwarning("주의", "이미 존재하는 유형입니다.")
-            return
-        self.defect_types.append(new_val)
-        self.cmb_batch_type["values"] = self.defect_types
-        self.ent_new_type.delete(0, tk.END)
-        messagebox.showinfo("완료", f"새 판정 유형 '{new_val}' 추가 완료")
-
     # -------------------------------------------------------------
-    # 엑셀 다운로드
+    # 엑셀 내보내기
     # -------------------------------------------------------------
     def export_to_excel(self):
         if not self.records:
