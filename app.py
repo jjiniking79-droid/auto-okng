@@ -33,6 +33,8 @@ except Exception:
 
 
 class DefectInspectorApp(tk.Tk):
+    THUMB_SIZE = (90, 90)
+
     def __init__(self):
         super().__init__()
         self.title("불량 이미지 자동 판정 프로그램 (이미지 미리보기 & 범용 컬럼 에디션)")
@@ -47,6 +49,7 @@ class DefectInspectorApp(tk.Tk):
         self.records = []
         self.defect_types = ["K 유기", "K 갈림", "NK 유기", "핀홀", "정상"]
         self.current_preview_img = None  # 가비지 컬렉션 방지용 이미지 참조
+        self.thumb_cache = {}  # 경로별 썸네일 PhotoImage 캐시 (가비지 컬렉션 방지 겸용)
 
         self._init_styles()
         self._init_ui()
@@ -55,7 +58,7 @@ class DefectInspectorApp(tk.Tk):
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Treeview.Heading", font=("맑은 고딕", 9, "bold"), background="#e0e0e0")
-        style.configure("Treeview", rowheight=24, font=("맑은 고딕", 9))
+        style.configure("Treeview", rowheight=96, font=("맑은 고딕", 9))
         style.map("Treeview", background=[("selected", "#0078d7")], foreground=[("selected", "white")])
 
     def _init_ui(self):
@@ -366,16 +369,19 @@ class DefectInspectorApp(tk.Tk):
     # 동적 컬럼 바인딩 & 파일명 파싱 로직
     # -------------------------------------------------------------
     def rebuild_treeview_headers(self):
-        active_cols = ["선택", "이미지"] + self.visible_columns + self.system_columns
+        # "이미지"는 텍스트가 아니라 실제 썸네일을 보여줘야 하므로, Treeview의
+        # 트리 아이콘 컬럼(#0)을 사용합니다. 나머지는 기존처럼 데이터 컬럼입니다.
+        self.tree["show"] = "tree headings"
+        self.tree.heading("#0", text="이미지", anchor="center")
+        self.tree.column("#0", width=110, minwidth=90, anchor="center", stretch=False)
+
+        active_cols = ["선택"] + self.visible_columns + self.system_columns
         self.tree["columns"] = active_cols
-        self.tree["show"] = "headings"
 
         for col in active_cols:
             self.tree.heading(col, text=col, anchor="center")
             if col == "선택":
                 self.tree.column(col, width=45, minwidth=40, anchor="center")
-            elif col == "이미지":
-                self.tree.column(col, width=200, minwidth=140, anchor="w")
             elif col in ["AI판정", "작업자 판정"]:
                 self.tree.column(col, width=100, minwidth=80, anchor="center")
             elif col == "신뢰율(%)":
@@ -494,13 +500,34 @@ class DefectInspectorApp(tk.Tk):
         }
         self.records.append(record)
 
+    def _get_thumbnail(self, record):
+        """레코드의 이미지 경로에 대한 썸네일 PhotoImage를 반환 (경로별 캐시)."""
+        path = record.get("full_path", "")
+        if path in self.thumb_cache:
+            return self.thumb_cache[path]
+        photo = None
+        try:
+            img = Image.open(path)
+            img.thumbnail(self.THUMB_SIZE)
+            photo = ImageTk.PhotoImage(img)
+        except Exception:
+            photo = None
+        self.thumb_cache[path] = photo
+        return photo
+
     def refresh_table_view(self):
         self.tree.delete(*self.tree.get_children())
-        active_cols = ["선택", "이미지"] + self.visible_columns + self.system_columns
+        active_cols = ["선택"] + self.visible_columns + self.system_columns
 
         for idx, r in enumerate(self.records):
             vals = [r.get(c, "-") for c in active_cols]
-            self.tree.insert("", tk.END, iid=str(idx), values=vals)
+            photo = self._get_thumbnail(r)
+            self.tree.insert(
+                "", tk.END, iid=str(idx),
+                text="" if photo is not None else "[없음]",
+                image=photo if photo is not None else "",
+                values=vals,
+            )
 
         self._update_summary()
 
@@ -528,7 +555,7 @@ class DefectInspectorApp(tk.Tk):
             idx = int(row_id)
             self.records[idx]["selected"] = not self.records[idx]["selected"]
             self.records[idx]["선택"] = "☑" if self.records[idx]["selected"] else "☐"
-            active_cols = ["선택", "이미지"] + self.visible_columns + self.system_columns
+            active_cols = ["선택"] + self.visible_columns + self.system_columns
             vals = [self.records[idx].get(c, "-") for c in active_cols]
             self.tree.item(row_id, values=vals)
 
@@ -674,6 +701,7 @@ class DefectInspectorApp(tk.Tk):
     def clear_all_records(self):
         if messagebox.askyesno("초기화", "목록을 전부 비우시겠습니까?"):
             self.records.clear()
+            self.thumb_cache.clear()
             self.refresh_table_view()
             self.lbl_image_display.config(image="", text="[이미지 없음]")
             self.lbl_preview_info.config(text="목록에서 항목을 선택하세요.")
