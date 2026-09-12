@@ -26,6 +26,7 @@ model_manager.py
 """
 
 import os
+import sys
 import json
 import pickle
 import random
@@ -42,7 +43,26 @@ from feature_extractor import (
     _load_image_any, FEATURE_VERSION,
 )
 
-MODEL_DIR = "model"
+
+def _resolve_app_data_dir():
+    """실행 위치(CWD)에 의존하지 않는, 항상 동일한 저장 폴더를 반환합니다.
+
+    이전에는 MODEL_DIR = "model" (상대경로)를 사용했는데, 이 경우 exe를 어떤
+    폴더/바로가기에서 실행하느냐에 따라 실제 저장되는 위치가 매번 달라질 수
+    있어 "학습한 모델을 다음 실행 때 기억하지 못하는" 문제의 원인이 됩니다.
+    Windows에서는 %APPDATA%, 그 외 OS에서는 사용자 홈 디렉토리 하위의 고정
+    경로를 사용해 항상 같은 곳에 저장/로드되도록 합니다.
+    """
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    path = os.path.join(base, "DefectInspector")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+MODEL_DIR = os.path.join(_resolve_app_data_dir(), "model")
 MODEL_FILE = os.path.join(MODEL_DIR, "classifier.pkl")
 META_FILE = os.path.join(MODEL_DIR, "meta.json")
 CACHE_FILE = os.path.join(MODEL_DIR, "feature_cache.pkl")
