@@ -1,9 +1,11 @@
 import os
 import re
 import sys
+import json
+import shutil
+import tempfile
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import pandas as pd
 from PIL import Image, ImageTk
 
 # 기존 백엔드 모듈 안전 연동
@@ -32,6 +34,47 @@ except Exception:
     model_mgr = None
 
 
+def _resolve_app_data_dir():
+    """실행 위치(CWD)에 의존하지 않는 고정 설정 저장 폴더.
+    model_manager.py의 모델 저장 위치와 동일한 규칙을 사용합니다."""
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    path = os.path.join(base, "DefectInspector")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+DEFECT_TYPES_FILE = os.path.join(_resolve_app_data_dir(), "defect_types.json")
+DEFAULT_DEFECT_TYPES = ["K 유기", "K 갈림", "NK 유기", "핀홀", "정상"]
+
+# AI판정 결과 중 "불량"으로 간주하지 않는(음영 처리 제외) 값들
+AI_NEUTRAL_VALUES = {"대기", "-", "", "정상", "미학습", "오류"}
+
+
+def load_defect_types():
+    """불량 유형 목록을 디스크에서 불러옵니다 (없으면 기본값)."""
+    if os.path.exists(DEFECT_TYPES_FILE):
+        try:
+            with open(DEFECT_TYPES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and data:
+                return data
+        except Exception:
+            pass
+    return list(DEFAULT_DEFECT_TYPES)
+
+
+def save_defect_types(defect_types):
+    """불량 유형 목록을 디스크에 저장합니다 (추가/삭제 시 호출)."""
+    try:
+        with open(DEFECT_TYPES_FILE, "w", encoding="utf-8") as f:
+            json.dump(defect_types, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("불량 유형 저장 실패:", e)
+
+
 class DefectInspectorApp(tk.Tk):
     THUMB_SIZE = (90, 90)
 
@@ -47,12 +90,17 @@ class DefectInspectorApp(tk.Tk):
         self.system_columns = ["AI판정", "신뢰율(%)", "작업자 판정"]
 
         self.records = []
-        self.defect_types = ["K 유기", "K 갈림", "NK 유기", "핀홀", "정상"]
+        self.defect_types = load_defect_types()  # 프로그램 재시작 후에도 기억되도록 디스크에서 로드
         self.current_preview_img = None  # 가비지 컬렉션 방지용 이미지 참조
         self.thumb_cache = {}  # 경로별 썸네일 PhotoImage 캐시 (가비지 컬렉션 방지 겸용)
 
+        # 판정 결과 필터 상태
+        self.filter_ai_value = "전체"
+        self.filter_worker_value = "전체"
+
         self._init_styles()
         self._init_ui()
+        self._refresh_model_status_label()
 
     def _init_styles(self):
         style = ttk.Style(self)
@@ -119,6 +167,27 @@ class DefectInspectorApp(tk.Tk):
         ttk.Button(type_bar, text="전체 선택", command=lambda: self.set_all_checks(True)).pack(side=tk.LEFT, padx=2)
         ttk.Button(type_bar, text="전체 해제", command=lambda: self.set_all_checks(False)).pack(side=tk.LEFT, padx=2)
 
+        # 3-1. 판정 결과 필터 바
+        filter_bar = ttk.LabelFrame(self, text="판정 결과 필터 (선택한 값으로만 화면에 표시)", padding=5)
+        filter_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=2)
+
+        ttk.Label(filter_bar, text="AI판정 필터:").pack(side=tk.LEFT, padx=(4, 2))
+        self.cmb_filter_ai = ttk.Combobox(filter_bar, state="readonly", width=14)
+        self.cmb_filter_ai.pack(side=tk.LEFT, padx=2)
+        self.cmb_filter_ai.bind("<<ComboboxSelected>>", lambda e: self.apply_result_filter())
+
+        ttk.Label(filter_bar, text="작업자 판정 필터:").pack(side=tk.LEFT, padx=(16, 2))
+        self.cmb_filter_worker = ttk.Combobox(filter_bar, state="readonly", width=14)
+        self.cmb_filter_worker.pack(side=tk.LEFT, padx=2)
+        self.cmb_filter_worker.bind("<<ComboboxSelected>>", lambda e: self.apply_result_filter())
+
+        ttk.Button(filter_bar, text="필터 초기화", command=self.reset_result_filter).pack(side=tk.LEFT, padx=(16, 2))
+
+        self.lbl_filter_status = ttk.Label(filter_bar, text="", font=("맑은 고딕", 9), foreground="#0078d7")
+        self.lbl_filter_status.pack(side=tk.LEFT, padx=(16, 2))
+
+        self._refresh_filter_options()
+
         # 4. 요약 통계 영역
         summary_frame = ttk.LabelFrame(self, text="판정 결과 요약", padding=5)
         summary_frame.pack(side=tk.TOP, fill=tk.X, padx=8, pady=2)
@@ -152,6 +221,10 @@ class DefectInspectorApp(tk.Tk):
         self.tree.bind("<Button-1>", self.on_tree_click)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<<TreeviewSelect>>", self.on_row_select)
+
+        # AI판정이 '불량'인 행에 적용할 파스텔 붉은색 음영 태그
+        self.tree.tag_configure("ng_row", background="#fbdede")
+        self.tree.tag_configure("ok_row", background="#ffffff")
 
         # 우측 이미지 미리보기 패널 영역
         preview_frame = ttk.LabelFrame(main_content_frame, text="🔍 실시간 이미지 미리보기", width=340, padding=10)
@@ -205,7 +278,9 @@ class DefectInspectorApp(tk.Tk):
             return
 
         self.defect_types.append(new_val)
+        save_defect_types(self.defect_types)  # 다음 실행 때도 기억되도록 저장
         self._sync_defect_type_combos(select_val=new_val)
+        self._refresh_filter_options()
         self.ent_new_type.delete(0, tk.END)
         messagebox.showinfo("완료", f"새 판정 유형 '{new_val}' 추가되었습니다.")
 
@@ -220,7 +295,9 @@ class DefectInspectorApp(tk.Tk):
 
         if messagebox.askyesno("유형 삭제 확인", f"정말 판정 유형 '{target}'을(를) 삭제하시겠습니까?"):
             self.defect_types.remove(target)
+            save_defect_types(self.defect_types)  # 다음 실행 때도 기억되도록 저장
             self._sync_defect_type_combos()
+            self._refresh_filter_options()
             messagebox.showinfo("완료", f"판정 유형 '{target}'이(가) 삭제되었습니다.")
 
     def _sync_defect_type_combos(self, select_val=None):
@@ -233,6 +310,62 @@ class DefectInspectorApp(tk.Tk):
         else:
             self.cmb_batch_type.set("")
             self.cmb_del_type.set("")
+
+    # -------------------------------------------------------------
+    # 판정 결과 필터 (AI판정 / 작업자 판정 값으로 화면에 보이는 것만 필터링)
+    # -------------------------------------------------------------
+    def _refresh_filter_options(self):
+        ai_values = ["전체", "대기", "정상", "오류", "미학습"] + [t for t in self.defect_types if t != "정상"]
+        worker_values = ["전체", "미판정"] + list(self.defect_types)
+
+        def _dedup(seq):
+            seen, out = set(), []
+            for v in seq:
+                if v not in seen:
+                    out.append(v)
+                    seen.add(v)
+            return out
+
+        ai_values = _dedup(ai_values)
+        worker_values = _dedup(worker_values)
+
+        cur_ai = self.cmb_filter_ai.get() or "전체"
+        cur_worker = self.cmb_filter_worker.get() or "전체"
+        self.cmb_filter_ai["values"] = ai_values
+        self.cmb_filter_worker["values"] = worker_values
+        self.cmb_filter_ai.set(cur_ai if cur_ai in ai_values else "전체")
+        self.cmb_filter_worker.set(cur_worker if cur_worker in worker_values else "전체")
+
+    def apply_result_filter(self):
+        self.filter_ai_value = self.cmb_filter_ai.get() or "전체"
+        self.filter_worker_value = self.cmb_filter_worker.get() or "전체"
+        self.refresh_table_view()
+
+    def reset_result_filter(self):
+        self.cmb_filter_ai.set("전체")
+        self.cmb_filter_worker.set("전체")
+        self.filter_ai_value = "전체"
+        self.filter_worker_value = "전체"
+        self.refresh_table_view()
+
+    # -------------------------------------------------------------
+    # AI 모델 학습 상태 표시 (프로그램을 새로 열었을 때 이전 학습 내용이
+    # 남아있는지 한눈에 확인할 수 있도록 표시)
+    # -------------------------------------------------------------
+    def _refresh_model_status_label(self):
+        try:
+            if model_mgr is not None and hasattr(model_mgr, "is_trained") and model_mgr.is_trained():
+                acc = getattr(model_mgr, "cv_accuracy", None)
+                acc_txt = f"{acc*100:.1f}%" if acc is not None else "N/A"
+                trained_at = getattr(model_mgr, "trained_at", "") or "-"
+                cnt = getattr(model_mgr, "train_count", 0)
+                self.lbl_status.config(
+                    text=f"✅ 모델 학습됨 (최근 학습: {trained_at} / 이미지 {cnt}장 / 정확도 {acc_txt})"
+                )
+            else:
+                self.lbl_status.config(text="⚪ 준비 완료. 모델 학습 여부: 미학습")
+        except Exception:
+            self.lbl_status.config(text="준비 완료.")
 
     # -------------------------------------------------------------
     # 컬럼 상세 편집 관리 다이얼로그
@@ -519,25 +652,43 @@ class DefectInspectorApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         active_cols = ["선택"] + self.visible_columns + self.system_columns
 
+        shown = 0
         for idx, r in enumerate(self.records):
+            ai_val = r.get("AI판정", "-")
+            worker_val = r.get("작업자 판정", "-")
+
+            if self.filter_ai_value != "전체" and ai_val != self.filter_ai_value:
+                continue
+            if self.filter_worker_value != "전체" and worker_val != self.filter_worker_value:
+                continue
+
             vals = [r.get(c, "-") for c in active_cols]
             photo = self._get_thumbnail(r)
+            tag = "ng_row" if ai_val not in AI_NEUTRAL_VALUES else "ok_row"
             self.tree.insert(
                 "", tk.END, iid=str(idx),
                 text="" if photo is not None else "[없음]",
                 image=photo if photo is not None else "",
                 values=vals,
+                tags=(tag,),
             )
+            shown += 1
 
-        self._update_summary()
+        self._update_summary(shown)
 
-    def _update_summary(self):
+    def _update_summary(self, shown_count=None):
         total = len(self.records)
         ai_done = sum(1 for r in self.records if r.get("AI판정") not in ["대기", "-", ""])
         uninspected = sum(1 for r in self.records if r.get("작업자 판정") == "미판정")
-        self.lbl_summary.config(
-            text=f"총 이미지 수: {total}개  |  AI 판정 완료: {ai_done}개  |  작업자 미검수: {uninspected}개"
-        )
+        text = f"총 이미지 수: {total}개  |  AI 판정 완료: {ai_done}개  |  작업자 미검수: {uninspected}개"
+        if shown_count is not None and shown_count != total:
+            text += f"  |  🔎 필터 적용 중: {shown_count}개 표시"
+        self.lbl_summary.config(text=text)
+        if hasattr(self, "lbl_filter_status"):
+            if self.filter_ai_value != "전체" or self.filter_worker_value != "전체":
+                self.lbl_filter_status.config(text=f"필터: AI판정='{self.filter_ai_value}', 작업자 판정='{self.filter_worker_value}'")
+            else:
+                self.lbl_filter_status.config(text="")
 
     # -------------------------------------------------------------
     # 인터랙션 (체크박스 및 더블클릭 수정)
@@ -591,9 +742,12 @@ class DefectInspectorApp(tk.Tk):
         ttk.Button(dlg, text="저장", command=save).pack(pady=10)
 
     def set_all_checks(self, check_state: bool):
-        for r in self.records:
-            r["selected"] = check_state
-            r["선택"] = "☑" if check_state else "☐"
+        # 필터가 걸려있으면 "전체"란 현재 화면에 보이는 항목을 의미하도록 처리
+        visible_idx = set(int(iid) for iid in self.tree.get_children())
+        for i, r in enumerate(self.records):
+            if i in visible_idx:
+                r["selected"] = check_state
+                r["선택"] = "☑" if check_state else "☐"
         self.refresh_table_view()
 
     def apply_batch_type(self):
@@ -613,11 +767,17 @@ class DefectInspectorApp(tk.Tk):
         messagebox.showinfo("완료", f"{count}개 항목에 '{target_val}'(으)로 일괄 적용되었습니다.")
 
     # -------------------------------------------------------------
-    # 엑셀 다운로드
+    # 엑셀 다운로드 (이미지 컬럼에 실제 썸네일 삽입, 현재 필터 반영)
     # -------------------------------------------------------------
     def export_to_excel(self):
         if not self.records:
             messagebox.showwarning("주의", "내보낼 데이터가 없습니다.")
+            return
+
+        # 현재 화면(필터 적용 결과)에 보이는 행만 내보냄
+        visible_iids = list(self.tree.get_children())
+        if not visible_iids:
+            messagebox.showwarning("주의", "필터 결과 화면에 표시된 항목이 없습니다.\n필터를 초기화하거나 조건을 바꿔주세요.")
             return
 
         save_path = filedialog.asksaveasfilename(
@@ -629,20 +789,80 @@ class DefectInspectorApp(tk.Tk):
             return
         save_path = save_path.replace("\x00", "")
 
-        export_cols = ["이미지"] + self.visible_columns + self.system_columns
-        rows_data = []
-        for r in self.records:
-            row_dict = {col: r.get(col, "") for col in export_cols}
-            rows_data.append(row_dict)
-
-        df = pd.DataFrame(rows_data)
-
         try:
-            with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="판정결과")
-            messagebox.showinfo("완료", f"엑셀 파일이 성공적으로 저장되었습니다:\n{save_path}")
+            from openpyxl import Workbook
+            from openpyxl.drawing.image import Image as XLImage
+            from openpyxl.utils import get_column_letter
+            from openpyxl.styles import Font, Alignment, PatternFill
+        except ImportError:
+            messagebox.showerror("오류", "엑셀 내보내기에 필요한 'openpyxl' 패키지가 설치되어 있지 않습니다.\n\npip install openpyxl 로 설치해주세요.")
+            return
+
+        active_cols = ["선택"] + self.visible_columns + self.system_columns
+        headers = ["이미지"] + active_cols
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "판정결과"
+
+        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        ng_fill = PatternFill(start_color="FBDEDE", end_color="FBDEDE", fill_type="solid")  # 파스텔 붉은색
+
+        for c, h in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=c, value=h)
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = header_fill
+
+        ws.column_dimensions[get_column_letter(1)].width = 16  # 이미지 컬럼
+        for c, h in enumerate(headers[1:], start=2):
+            ws.column_dimensions[get_column_letter(c)].width = max(12, len(str(h)) + 4)
+        ws.freeze_panes = "A2"
+
+        tmp_dir = tempfile.mkdtemp(prefix="defect_xlsx_")
+        try:
+            row_i = 2
+            for iid in visible_iids:
+                idx = int(iid)
+                r = self.records[idx]
+                ai_val = r.get("AI판정", "-")
+                is_ng = ai_val not in AI_NEUTRAL_VALUES
+
+                for c, col in enumerate(active_cols, start=2):
+                    cell = ws.cell(row=row_i, column=c, value=r.get(col, "-"))
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    if is_ng:
+                        cell.fill = ng_fill
+
+                ws.row_dimensions[row_i].height = 66
+
+                # 이미지 컬럼(1번)에는 텍스트 대신 실제 썸네일을 삽입
+                img_cell = ws.cell(row=row_i, column=1)
+                if is_ng:
+                    img_cell.fill = ng_fill
+                try:
+                    path = r.get("full_path", "").replace("\x00", "")
+                    thumb_path = os.path.join(tmp_dir, f"thumb_{row_i}.png")
+                    im = Image.open(path).convert("RGB")
+                    im.thumbnail((85, 85))
+                    im.save(thumb_path)
+                    xlimg = XLImage(thumb_path)
+                    ws.add_image(xlimg, f"{get_column_letter(1)}{row_i}")
+                except Exception:
+                    img_cell.value = "[이미지 없음]"
+
+                row_i += 1
+
+            wb.save(save_path)
+            messagebox.showinfo(
+                "완료",
+                f"엑셀 파일이 성공적으로 저장되었습니다:\n{save_path}\n\n"
+                f"(현재 화면에 표시된 {len(visible_iids)}개 항목이 저장되었습니다)"
+            )
         except Exception as e:
             messagebox.showerror("오류", f"엑셀 저장 중 오류 발생: {e}")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # -------------------------------------------------------------
     # AI 학습 및 판정 (널 문자 정제 철저 적용)
@@ -665,8 +885,8 @@ class DefectInspectorApp(tk.Tk):
             if hasattr(model_mgr, "train"):
                 acc = model_mgr.train(paths, labels)
                 acc_txt = f"{acc*100:.1f}%" if acc is not None else "N/A (데이터 부족으로 검증 생략)"
-                self.lbl_status.config(text=f"모델 학습 완료 (교차검증 정확도: {acc_txt})")
-                messagebox.showinfo("성공", f"AI 모델 학습이 완료되었습니다!\n교차검증 정확도: {acc_txt}")
+                self._refresh_model_status_label()
+                messagebox.showinfo("성공", f"AI 모델 학습이 완료되었습니다!\n교차검증 정확도: {acc_txt}\n\n(학습 내용은 자동 저장되어 프로그램을 다시 열어도 유지됩니다)")
             else:
                 messagebox.showinfo("안내", "학습 완료 (더미 모드)")
         except Exception as e:
