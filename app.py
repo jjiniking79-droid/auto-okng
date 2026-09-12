@@ -626,19 +626,20 @@ class DefectInspectorApp(tk.Tk):
             messagebox.showwarning("데이터 부족", "최소 2개 이상의 작업자 판정 데이터가 필요합니다.")
             return
 
-        features = []
-        labels = []
-        for r in train_records:
-            clean_path = r["full_path"].replace("\x00", "")
-            feats = extract_feat_fn(clean_path)
-            features.append(feats)
-            labels.append(r["작업자 판정"])
+        # model_manager.ModelManager.train()은 '이미지 경로' 목록을 받아 내부적으로
+        # 자체 특징추출+캐싱+증강을 수행하도록 설계되어 있습니다. 여기서 미리
+        # 특징벡터(feats)를 뽑아 넘기면 os.stat()가 경로 대신 숫자 배열을 받게 되어
+        # (Windows에서 "embedded null character in path" 오류의 원인) 반드시 실패합니다.
+        # 따라서 널문자만 제거한 순수 경로 문자열을 그대로 넘겨야 합니다.
+        paths = [r["full_path"].replace("\x00", "") for r in train_records]
+        labels = [r["작업자 판정"] for r in train_records]
 
         try:
             if hasattr(model_mgr, "train"):
-                acc = model_mgr.train(features, labels)
-                self.lbl_status.config(text="모델 학습 완료")
-                messagebox.showinfo("성공", "AI 모델 학습이 완료되었습니다!")
+                acc = model_mgr.train(paths, labels)
+                acc_txt = f"{acc*100:.1f}%" if acc is not None else "N/A (데이터 부족으로 검증 생략)"
+                self.lbl_status.config(text=f"모델 학습 완료 (교차검증 정확도: {acc_txt})")
+                messagebox.showinfo("성공", f"AI 모델 학습이 완료되었습니다!\n교차검증 정확도: {acc_txt}")
             else:
                 messagebox.showinfo("안내", "학습 완료 (더미 모드)")
         except Exception as e:
@@ -648,14 +649,20 @@ class DefectInspectorApp(tk.Tk):
         for r in self.records:
             try:
                 clean_path = r["full_path"].replace("\x00", "")
-                feats = extract_feat_fn(clean_path)
                 if hasattr(model_mgr, "predict"):
-                    pred_class, conf = model_mgr.predict(feats)
+                    # ModelManager.predict()도 마찬가지로 '이미지 경로'를 받아 내부에서
+                    # 직접 특징을 추출하도록 설계되어 있으므로, 경로를 그대로 넘깁니다.
+                    pred_class, conf = model_mgr.predict(clean_path)
+                    if pred_class is None:
+                        r["AI판정"] = "미학습"
+                        r["신뢰율(%)"] = "-"
+                        continue
                     r["AI판정"] = pred_class
                     r["신뢰율(%)"] = f"{conf * 100:.1f}" if isinstance(conf, float) else str(conf)
                     if r["작업자 판정"] == "미판정":
                         r["작업자 판정"] = pred_class
                 else:
+                    extract_feat_fn(clean_path)
                     r["AI판정"] = "정상"
                     r["신뢰율(%)"] = "95.0"
             except Exception:
