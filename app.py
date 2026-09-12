@@ -6,7 +6,7 @@ from tkinter import ttk, filedialog, messagebox
 import pandas as pd
 from PIL import Image, ImageTk
 
-# 기존 백엔드 모듈 안전 연동 (함수/클래스 형태 모두 대응)
+# 기존 백엔드 모듈 안전 연동
 try:
     import feature_extractor as fe_mod
     if hasattr(fe_mod, "FeatureExtractor"):
@@ -31,26 +31,14 @@ try:
 except Exception:
     model_mgr = None
 
-try:
-    import data_store as ds_mod
-    if hasattr(ds_mod, "DataStore"):
-        store_mgr = ds_mod.DataStore()
-    else:
-        store_mgr = ds_mod
-except Exception:
-    store_mgr = None
-
 
 class DefectInspectorApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("불량 이미지 자동 판정 프로그램 (범용 동적 컬럼 에디션)")
-        self.geometry("1500x900")
-        self.minsize(1200, 700)
+        self.title("불량 이미지 자동 판정 프로그램 (이미지 미리보기 & 범용 컬럼 에디션)")
+        self.geometry("1600x950")
+        self.minsize(1300, 750)
 
-        # -------------------------------------------------------------
-        # 기본 컬럼 및 판정 유형 설정
-        # -------------------------------------------------------------
         self.delimiter = "_"
         self.custom_columns = ["LOT", "GLS", "셀번지", "X", "Y", "검사호기"]
         self.visible_columns = list(self.custom_columns)
@@ -58,6 +46,7 @@ class DefectInspectorApp(tk.Tk):
 
         self.records = []
         self.defect_types = ["K 유기", "K 갈림", "NK 유기", "핀홀", "정상"]
+        self.current_preview_img = None  # 가비지 컬렉션 방지용 이미지 참조
 
         self._init_styles()
         self._init_ui()
@@ -99,20 +88,18 @@ class DefectInspectorApp(tk.Tk):
         self.ent_cols.pack(side=tk.LEFT, padx=(0, 8))
 
         ttk.Button(cfg_bar, text="즉시 적용", command=self.apply_column_rule_from_entry).pack(side=tk.LEFT, padx=2)
-        ttk.Button(cfg_bar, text="✏️ 컬럼 상세 편집(추가/삭제/이름수정)", command=self.open_column_manager_dialog).pack(side=tk.LEFT, padx=4)
+        ttk.Button(cfg_bar, text="✏️ 컬럼 상세 편집", command=self.open_column_manager_dialog).pack(side=tk.LEFT, padx=4)
         ttk.Button(cfg_bar, text="👁️ 표시 컬럼 필터", command=self.open_column_filter_dialog).pack(side=tk.LEFT, padx=4)
 
-        # 3. 판정 유형 관리 바 (유형 추가 및 유형 삭제 포함)
+        # 3. 판정 유형 관리 바
         type_bar = ttk.LabelFrame(self, text="판정 유형 관리", padding=5)
         type_bar.pack(side=tk.TOP, fill=tk.X, padx=8, pady=2)
 
-        # 새 유형 추가
         ttk.Label(type_bar, text="새 유형:").pack(side=tk.LEFT, padx=(4, 2))
         self.ent_new_type = ttk.Entry(type_bar, width=12)
         self.ent_new_type.pack(side=tk.LEFT, padx=2)
         ttk.Button(type_bar, text="추가", command=self.add_defect_type).pack(side=tk.LEFT, padx=2)
 
-        # 기존 유형 삭제
         ttk.Label(type_bar, text="삭제할 유형:").pack(side=tk.LEFT, padx=(12, 2))
         self.cmb_del_type = ttk.Combobox(type_bar, values=self.defect_types, state="readonly", width=12)
         if self.defect_types:
@@ -120,7 +107,6 @@ class DefectInspectorApp(tk.Tk):
         self.cmb_del_type.pack(side=tk.LEFT, padx=2)
         ttk.Button(type_bar, text="유형 삭제", command=self.delete_defect_type).pack(side=tk.LEFT, padx=2)
 
-        # 선택 일괄 적용
         ttk.Label(type_bar, text="선택 항목 일괄 판정:").pack(side=tk.LEFT, padx=(20, 2))
         self.cmb_batch_type = ttk.Combobox(type_bar, values=self.defect_types, state="readonly", width=12)
         if self.defect_types:
@@ -136,15 +122,19 @@ class DefectInspectorApp(tk.Tk):
         self.lbl_summary = ttk.Label(summary_frame, text="총 이미지 수: 0개  |  AI 판정 완료: 0개  |  작업자 미검수: 0개", font=("맑은 고딕", 9, "bold"))
         self.lbl_summary.pack(anchor="w", padx=5)
 
-        # 5. 하단 Treeview 테이블 영역
-        tbl_container = ttk.Frame(self, padding=(8, 4, 8, 8))
-        tbl_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # 5. 메인 컨테이너 (좌측: 테이블 / 우측: 이미지 미리보기 패널)
+        main_content_frame = ttk.Frame(self, padding=(8, 4, 8, 8))
+        main_content_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        self.scroll_y = ttk.Scrollbar(tbl_container, orient=tk.VERTICAL)
-        self.scroll_x = ttk.Scrollbar(tbl_container, orient=tk.HORIZONTAL)
+        # 좌측 테이블 영역
+        table_container = ttk.Frame(main_content_frame)
+        table_container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.scroll_y = ttk.Scrollbar(table_container, orient=tk.VERTICAL)
+        self.scroll_x = ttk.Scrollbar(table_container, orient=tk.HORIZONTAL)
 
         self.tree = ttk.Treeview(
-            tbl_container,
+            table_container,
             yscrollcommand=self.scroll_y.set,
             xscrollcommand=self.scroll_x.set,
             selectmode="extended"
@@ -158,8 +148,47 @@ class DefectInspectorApp(tk.Tk):
 
         self.tree.bind("<Button-1>", self.on_tree_click)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
+        self.tree.bind("<<TreeviewSelect>>", self.on_row_select)
+
+        # 우측 이미지 미리보기 패널 영역
+        preview_frame = ttk.LabelFrame(main_content_frame, text="🔍 실시간 이미지 미리보기", width=340, padding=10)
+        preview_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(10, 0))
+        preview_frame.pack_propagate(False)
+
+        self.lbl_preview_info = ttk.Label(preview_frame, text="목록에서 항목을 선택하세요.", font=("맑은 고딕", 9), anchor="center")
+        self.lbl_preview_info.pack(side=tk.TOP, fill=tk.X, pady=(0, 5))
+
+        self.lbl_image_display = ttk.Label(preview_frame, text="[이미지 없음]", background="#f0f0f0", anchor="center")
+        self.lbl_image_display.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         self.rebuild_treeview_headers()
+
+    # -------------------------------------------------------------
+    # 이미지 미리보기 업데이트 로직
+    # -------------------------------------------------------------
+    def on_row_select(self, event):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            return
+        row_id = selected_items[0]
+        try:
+            idx = int(row_id)
+            record = self.records[idx]
+            full_path = record["full_path"].replace("\x00", "")
+
+            if os.path.exists(full_path):
+                img = Image.open(full_path)
+                # 미리보기 패널 크기에 맞게 리사이즈 (가로 최대 300, 세로 최대 350)
+                img.thumbnail((300, 350))
+                self.current_preview_img = ImageTk.PhotoImage(img)
+                self.lbl_image_display.config(image=self.current_preview_img, text="")
+                self.lbl_preview_info.config(text=f"파일명: {record['이미지']}")
+            else:
+                self.lbl_image_display.config(image="", text="[파일을 찾을 수 없음]")
+                self.lbl_preview_info.config(text="")
+        except Exception as e:
+            self.lbl_image_display.config(image="", text="[미리보기 로드 오류]")
+            self.lbl_preview_info.config(text="")
 
     # -------------------------------------------------------------
     # 판정 유형 추가 / 삭제 로직
@@ -204,7 +233,7 @@ class DefectInspectorApp(tk.Tk):
             self.cmb_del_type.set("")
 
     # -------------------------------------------------------------
-    # 컬럼 상세 편집 (수정, 추가, 삭제, 순서 변경) 다이얼로그
+    # 컬럼 상세 편집 관리 다이얼로그
     # -------------------------------------------------------------
     def open_column_manager_dialog(self):
         dlg = tk.Toplevel(self)
@@ -220,7 +249,6 @@ class DefectInspectorApp(tk.Tk):
         body_frame = ttk.Frame(dlg)
         body_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=5)
 
-        # 리스트박스 및 스크롤바
         lb_frame = ttk.Frame(body_frame)
         lb_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -233,7 +261,6 @@ class DefectInspectorApp(tk.Tk):
         for col in self.custom_columns:
             col_listbox.insert(tk.END, col)
 
-        # 우측 조작 버튼 프레임
         btn_frame = ttk.Frame(body_frame)
         btn_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
 
@@ -311,7 +338,6 @@ class DefectInspectorApp(tk.Tk):
         ttk.Button(btn_frame, text="▲ 위로", command=move_up).pack(fill=tk.X, pady=2)
         ttk.Button(btn_frame, text="▼ 아래로", command=move_down).pack(fill=tk.X, pady=2)
 
-        # 하단 적용/취소
         bot_btn_frame = ttk.Frame(dlg)
         bot_btn_frame.pack(fill=tk.X, padx=12, pady=10)
 
@@ -324,11 +350,9 @@ class DefectInspectorApp(tk.Tk):
             self.custom_columns = new_cols
             self.visible_columns = list(new_cols)
 
-            # 상단 Entry 동기화
             self.ent_cols.delete(0, tk.END)
             self.ent_cols.insert(0, ", ".join(self.custom_columns))
 
-            # 데이터 재파싱 및 트리뷰 재구성
             for r in self.records:
                 r.update(self.parse_filename(r["이미지"]))
 
@@ -352,13 +376,13 @@ class DefectInspectorApp(tk.Tk):
             if col == "선택":
                 self.tree.column(col, width=45, minwidth=40, anchor="center")
             elif col == "이미지":
-                self.tree.column(col, width=220, minwidth=150, anchor="w")
+                self.tree.column(col, width=200, minwidth=140, anchor="w")
             elif col in ["AI판정", "작업자 판정"]:
-                self.tree.column(col, width=110, minwidth=90, anchor="center")
+                self.tree.column(col, width=100, minwidth=80, anchor="center")
             elif col == "신뢰율(%)":
                 self.tree.column(col, width=80, minwidth=70, anchor="center")
             else:
-                self.tree.column(col, width=110, minwidth=80, anchor="center")
+                self.tree.column(col, width=100, minwidth=80, anchor="center")
 
         self.refresh_table_view()
 
@@ -425,12 +449,13 @@ class DefectInspectorApp(tk.Tk):
         ttk.Button(btn_frame, text="취소", command=dlg.destroy).pack(side=tk.RIGHT)
 
     # -------------------------------------------------------------
-    # 데이터 로드 및 렌더링
+    # 데이터 로드 및 렌더링 (경로 널 문자 정제 포함)
     # -------------------------------------------------------------
     def load_image_folder(self):
         folder = filedialog.askdirectory()
         if not folder:
             return
+        folder = folder.replace("\x00", "")
         valid_exts = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
         files = [f for f in os.listdir(folder) if f.lower().endswith(valid_exts)]
         if not files:
@@ -448,19 +473,21 @@ class DefectInspectorApp(tk.Tk):
         if not file_paths:
             return
         for p in file_paths:
-            f = os.path.basename(p)
-            self._add_file_record(f, p)
+            p_clean = p.replace("\x00", "")
+            f = os.path.basename(p_clean)
+            self._add_file_record(f, p_clean)
         self.refresh_table_view()
 
     def _add_file_record(self, filename, full_path):
-        if any(r["full_path"] == full_path for r in self.records):
+        clean_path = full_path.replace("\x00", "")
+        if any(r["full_path"] == clean_path for r in self.records):
             return
         parsed = self.parse_filename(filename)
         record = {
             "selected": False,
             "선택": "☐",
             "이미지": filename,
-            "full_path": full_path,
+            "full_path": clean_path,
             **parsed,
             "AI판정": "대기",
             "신뢰율(%)": "-",
@@ -560,7 +587,7 @@ class DefectInspectorApp(tk.Tk):
         messagebox.showinfo("완료", f"{count}개 항목에 '{target_val}'(으)로 일괄 적용되었습니다.")
 
     # -------------------------------------------------------------
-    # 엑셀 내보내기
+    # 엑셀 다운로드
     # -------------------------------------------------------------
     def export_to_excel(self):
         if not self.records:
@@ -574,6 +601,7 @@ class DefectInspectorApp(tk.Tk):
         )
         if not save_path:
             return
+        save_path = save_path.replace("\x00", "")
 
         export_cols = ["이미지"] + self.visible_columns + self.system_columns
         rows_data = []
@@ -602,7 +630,8 @@ class DefectInspectorApp(tk.Tk):
         features = []
         labels = []
         for r in train_records:
-            feats = extract_feat_fn(r["full_path"])
+            clean_path = r["full_path"].replace("\x00", "")
+            feats = extract_feat_fn(clean_path)
             features.append(feats)
             labels.append(r["작업자 판정"])
 
@@ -619,7 +648,8 @@ class DefectInspectorApp(tk.Tk):
     def run_auto_inspect(self):
         for r in self.records:
             try:
-                feats = extract_feat_fn(r["full_path"])
+                clean_path = r["full_path"].replace("\x00", "")
+                feats = extract_feat_fn(clean_path)
                 if hasattr(model_mgr, "predict"):
                     pred_class, conf = model_mgr.predict(feats)
                     r["AI판정"] = pred_class
@@ -639,6 +669,8 @@ class DefectInspectorApp(tk.Tk):
         if messagebox.askyesno("초기화", "목록을 전부 비우시겠습니까?"):
             self.records.clear()
             self.refresh_table_view()
+            self.lbl_image_display.config(image="", text="[이미지 없음]")
+            self.lbl_preview_info.config(text="목록에서 항목을 선택하세요.")
 
 
 if __name__ == "__main__":
