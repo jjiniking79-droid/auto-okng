@@ -178,7 +178,6 @@ class DefectInspectorApp(tk.Tk):
 
             if os.path.exists(full_path):
                 img = Image.open(full_path)
-                # 미리보기 패널 크기에 맞게 리사이즈 (가로 최대 300, 세로 최대 350)
                 img.thumbnail((300, 350))
                 self.current_preview_img = ImageTk.PhotoImage(img)
                 self.lbl_image_display.config(image=self.current_preview_img, text="")
@@ -186,7 +185,7 @@ class DefectInspectorApp(tk.Tk):
             else:
                 self.lbl_image_display.config(image="", text="[파일을 찾을 수 없음]")
                 self.lbl_preview_info.config(text="")
-        except Exception as e:
+        except Exception:
             self.lbl_image_display.config(image="", text="[미리보기 로드 오류]")
             self.lbl_preview_info.config(text="")
 
@@ -619,7 +618,7 @@ class DefectInspectorApp(tk.Tk):
             messagebox.showerror("오류", f"엑셀 저장 중 오류 발생: {e}")
 
     # -------------------------------------------------------------
-    # AI 학습 및 판정
+    # AI 학습 및 판정 (널 문자 정제 철저 적용)
     # -------------------------------------------------------------
     def train_model(self):
         train_records = [r for r in self.records if r.get("작업자 판정") not in ["미판정", "", "-"]]
